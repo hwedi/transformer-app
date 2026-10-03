@@ -1,0 +1,314 @@
+name: Deploy to Azure
+
+# Runs by itself every time something is committed to the main branch.
+# It can also be started by hand: Actions tab, Deploy to Azure, Run workflow.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Send everything and reinstall (slow, several minutes)"
+        type: boolean
+        default: false
+
+# Only one deployment at a time; a newer one waits for the older one.
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # needed to see what changed since the last push
+      - name: Deploy
+        env:
+          AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          BEFORE: ${{ github.event.before }}
+          FORCE_FULL: ${{ inputs.full }}
+          APP_URL: https://transformer.stochos.dev      # change this if the address changes
+        run: |
+          python3 - <<'PY'
+          #!/usr/bin/env python3
+          """Deploy this repository to Azure App Service. Runs inside GitHub Actions. Standard library only.
+
+          What it does
+            1. Works out which files changed in the push.
+            2. Only files in static/ changed  -> uploads just those files (about 20 seconds, no restart),
+               then checks the live site really serves them. If it does not, it falls back to step 3.
+            3. Anything else changed (app.py, requirements.txt, artifacts/, samples/), or this is the
+               first deploy, or a file in static/ was deleted -> sends the whole package and waits
+               for Azure to install it and for the models to load (several minutes).
+
+          It signs in with the app's "publish profile", stored as the GitHub secret
+          AZURE_WEBAPP_PUBLISH_PROFILE. Nothing else is needed.
+          """
+          import base64
+          import hashlib
+          import io
+          import json
+          import os
+          import subprocess
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import xml.etree.ElementTree as ET
+          import zipfile
+          from pathlib import Path
+
+          ROOT = Path.cwd()                       # the workflow runs this from the repository folder
+          PACKAGE = ["app.py", "requirements.txt", "static", "artifacts", "samples"]
+          BACKEND_FILES = {"app.py", "requirements.txt"}
+          BACKEND_DIRS = ("artifacts/", "samples/")
+          SERVED_FOLDERS = ("css/", "js/", "fonts/", "img/")      # the folders app.py serves from static/
+          APP_URL = os.environ.get("APP_URL", "https://transformer.stochos.dev").rstrip("/")
+          POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "10"))
+          DEPLOY_TIMEOUT_MIN = float(os.environ.get("DEPLOY_TIMEOUT_MIN", "45"))
+          READY_TIMEOUT_MIN = float(os.environ.get("READY_TIMEOUT_MIN", "8"))
+          STATUS = {0: "waiting", 1: "building (installing packages)", 2: "copying files", 3: "failed", 4: "finished"}
+
+
+          class DeployError(Exception):
+              pass
+
+
+          # ------------------------------------------------------------------ connection
+          def connection():
+              """Returns (base web address of the deploy service, Authorization header value)."""
+              base, user, password = os.environ.get("KUDU_URL"), os.environ.get("KUDU_USER"), os.environ.get("KUDU_PASS")
+              if not (base and user and password):
+                  raw = os.environ.get("AZURE_WEBAPP_PUBLISH_PROFILE", "").strip()
+                  if not raw:
+                      raise DeployError("The secret AZURE_WEBAPP_PUBLISH_PROFILE is empty or missing. See README.md, step 3.")
+                  try:
+                      root = ET.fromstring(raw)
+                      profile = next(p for p in root.iter("publishProfile") if p.get("publishMethod") == "ZipDeploy")
+                  except (ET.ParseError, StopIteration):
+                      raise DeployError("The secret AZURE_WEBAPP_PUBLISH_PROFILE does not look like a publish profile. "
+                                        "Paste the whole downloaded file, from <publishData> to </publishData>.")
+                  base = "https://" + profile.get("publishUrl").split(":")[0]
+                  user, password = profile.get("userName"), profile.get("userPWD")
+              print(f"::add-mask::{password}")
+              token = base64.b64encode(f"{user}:{password}".encode()).decode()
+              return base.rstrip("/"), "Basic " + token
+
+
+          def call(method, url, auth, data=None, headers=None, timeout=120, retries=3):
+              """One web request. Returns (status, response headers, body). Retries on network trouble and 5xx."""
+              last = None
+              for attempt in range(retries):
+                  req = urllib.request.Request(url, data=data, method=method, headers={"Authorization": auth, **(headers or {})})
+                  try:
+                      with urllib.request.urlopen(req, timeout=timeout) as r:
+                          return r.status, dict(r.headers), r.read()
+                  except urllib.error.HTTPError as e:
+                      body = e.read()
+                      if e.code < 500 or attempt == retries - 1:
+                          return e.code, dict(e.headers), body
+                      last = f"HTTP {e.code}"
+                  except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                      last = str(e)
+                  time.sleep(2 + attempt * 3)
+              raise DeployError(f"Could not reach {url}: {last}")
+
+
+          # ------------------------------------------------------------------ what changed
+          def git(*args):
+              return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+
+
+          def changes():
+              """Returns (changed or added files, deleted files), or None when everything should be deployed."""
+              before = os.environ.get("BEFORE", "").strip()
+              if os.environ.get("FORCE_FULL", "").lower() == "true":
+                  print("A full deploy was requested.")
+                  return None
+              if not before or set(before) == {"0"} or git("cat-file", "-e", f"{before}^{{commit}}").returncode != 0:
+                  print("No earlier version to compare with, so this is a full deploy.")
+                  return None
+              out = git("diff", "--name-status", "--no-renames", before, "HEAD")
+              if out.returncode != 0:
+                  print("Could not compare versions, so this is a full deploy.")
+                  return None
+              changed, deleted = [], []
+              for line in out.stdout.splitlines():
+                  status, _, path = line.partition("\t")
+                  (deleted if status.startswith("D") else changed).append(path)
+              return changed, deleted
+
+
+          def is_backend(path):
+              return path in BACKEND_FILES or path.startswith(BACKEND_DIRS)
+
+
+          # ------------------------------------------------------------------ full deploy
+          def build_zip():
+              for needed in ("artifacts", "samples"):
+                  if not (ROOT / needed).is_dir():
+                      raise DeployError(f"The folder {needed}/ is missing from the repository. Add your model files (see README.md).")
+              buf = io.BytesIO()
+              with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                  for item in PACKAGE:
+                      p = ROOT / item
+                      files = [p] if p.is_file() else sorted(f for f in p.rglob("*") if f.is_file())
+                      for f in files:
+                          if "__pycache__" in f.parts or f.name == ".DS_Store":
+                              continue
+                          z.write(f, f.relative_to(ROOT).as_posix())
+              return buf.getvalue()
+
+
+          def show_log(base, auth):
+              code, _, body = call("GET", f"{base}/api/deployments/latest/log", auth, retries=1)
+              if code == 200:
+                  try:
+                      for entry in json.loads(body)[-15:]:
+                          print("   ", entry.get("message", ""))
+                  except ValueError:
+                      pass
+
+
+          def full_deploy():
+              base, auth = connection()
+              data = build_zip()
+              print(f"Sending the full package ({len(data) / 1024:.0f} KB). Azure will now install everything; this takes a while.")
+              for attempt in range(6):
+                  code, hdr, body = call("POST", f"{base}/api/zipdeploy?isAsync=true", auth, data=data,
+                                         headers={"Content-Type": "application/zip"}, timeout=300)
+                  if code in (200, 202):
+                      break
+                  if code == 409:                                    # another deployment is still running
+                      print("Azure is still busy with an earlier deployment, waiting a minute ...")
+                      time.sleep(60)
+                      continue
+                  raise DeployError(f"Azure refused the package (HTTP {code}). "
+                                    + ("The publish profile secret is wrong, or basic authentication is switched off for the app."
+                                       if code in (401, 403) else body[:300].decode(errors="replace")))
+              else:
+                  raise DeployError("Azure stayed busy with another deployment. Try again in a few minutes.")
+
+              loc = {k.lower(): v for k, v in hdr.items()}.get("location")
+              parts = urllib.parse.urlsplit(loc) if loc else None
+              status_url = f"{base}{parts.path}" + (f"?{parts.query}" if parts.query else "") if parts else f"{base}/api/deployments/latest"
+              deadline, last = time.time() + DEPLOY_TIMEOUT_MIN * 60, None
+              while time.time() < deadline:
+                  code, _, body = call("GET", status_url, auth, timeout=60, retries=2)
+                  try:
+                      info = json.loads(body) if body else {}
+                  except ValueError:
+                      info = {}
+                  state = info.get("status")
+                  if state != last and state is not None:
+                      print(f"  Azure: {STATUS.get(state, state)}")
+                      last = state
+                  if state == 3:
+                      show_log(base, auth)
+                      raise DeployError("Azure could not install the package. The lines above come from Azure's log.")
+                  if state == 4:
+                      break
+                  time.sleep(POLL_SECONDS)
+              else:
+                  raise DeployError(f"Azure did not finish within {DEPLOY_TIMEOUT_MIN:.0f} minutes. Check the app's deployment log.")
+              wait_until_ready()
+
+
+          def wait_until_ready():
+              print("Waiting for the models to load ...")
+              deadline = time.time() + READY_TIMEOUT_MIN * 60
+              while time.time() < deadline:
+                  try:
+                      with urllib.request.urlopen(f"{APP_URL}/api/health?v={int(time.time())}", timeout=20) as r:
+                          info = json.loads(r.read())
+                      if info.get("error"):
+                          raise DeployError("The app started, but the models failed to load: " + str(info["error"]))
+                      if info.get("ready"):
+                          print("The app is live and the models are loaded.")
+                          return
+                  except (urllib.error.URLError, TimeoutError, ValueError, ConnectionError):
+                      pass                                           # still restarting
+                  time.sleep(POLL_SECONDS)
+              print("::warning::The app did not report ready within the time limit. Open the site and check.")
+
+
+          # ------------------------------------------------------------------ quick deploy of static files
+          def served_path(rel):
+              """Address the live site uses for a file under static/, or None if the app does not serve it."""
+              if rel == "index.html":
+                  return "/"
+              return "/" + rel if rel.startswith(SERVED_FOLDERS) else None
+
+
+          def push_static(files):
+              base, auth = connection()
+              dirs = sorted({str(Path(f).parent.as_posix()) for f in files if str(Path(f).parent) != "."})
+              for d in dirs:                                         # make sure folders exist (harmless if they do)
+                  call("PUT", f"{base}/api/vfs/site/wwwroot/static/{d}/", auth, retries=1)
+              for f in files:
+                  code, _, body = call("PUT", f"{base}/api/vfs/site/wwwroot/static/{f}", auth,
+                                       data=(ROOT / "static" / f).read_bytes(),
+                                       headers={"If-Match": "*", "Content-Type": "application/octet-stream"}, timeout=120)
+                  if code not in (200, 201, 204):
+                      raise DeployError(f"Could not upload static/{f} (HTTP {code}).")
+                  print(f"  uploaded {f}")
+
+
+          def live_matches(files):
+              """True when the live site serves exactly the bytes we just uploaded."""
+              stamp = int(time.time())
+              for f in files:
+                  path = served_path(f)
+                  if not path:
+                      continue
+                  want = hashlib.sha256((ROOT / "static" / f).read_bytes()).hexdigest()
+                  ok = False
+                  for _ in range(4):
+                      try:
+                          with urllib.request.urlopen(f"{APP_URL}{path}?v={stamp}", timeout=30) as r:
+                              ok = hashlib.sha256(r.read()).hexdigest() == want
+                      except (urllib.error.URLError, TimeoutError, ConnectionError):
+                          ok = False
+                      if ok:
+                          break
+                      time.sleep(3)
+                  if not ok:
+                      print(f"  the live site is not serving the new {f}")
+                      return False
+              return True
+
+
+          # ------------------------------------------------------------------ main
+          def main():
+              result = changes()
+              if result is None:
+                  return full_deploy()
+              changed, deleted = result
+              static = sorted(p[len("static/"):] for p in changed if p.startswith("static/"))
+              print("Changed:", ", ".join(changed + [f"{d} (deleted)" for d in deleted]) or "nothing")
+              if any(is_backend(p) for p in changed + deleted) or any(d.startswith("static/") for d in deleted):
+                  print("The server or the models changed, so this is a full deploy.")
+                  return full_deploy()
+              if not static:
+                  print("Nothing in this change needs deploying (only notes or workflow files changed).")
+                  return
+              print("Only the web page changed. Uploading just those files, no restart.")
+              push_static(static)
+              if live_matches(static):
+                  print("Live now. Refresh the site.")
+                  return
+              print("Falling back to a full deploy, to be safe.")
+              full_deploy()
+
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except DeployError as e:
+                  print(f"::error::{e}")
+                  sys.exit(1)
+          PY
