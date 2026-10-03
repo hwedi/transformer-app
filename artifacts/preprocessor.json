@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "gas_columns": [
+    "H2",
+    "CO",
+    "C2H4",
+    "C2H2"
+  ],
+  "seq_len": 420,
+  "validation_rules": {
+    "exact_column_set": [
+      "H2",
+      "CO",
+      "C2H4",
+      "C2H2"
+    ],
+    "column_order_enforced": true,
+    "sequence_length": 420,
+    "row_order": "kept as in file (chronological); optional time column must be strictly increasing",
+    "reject_non_numeric": true,
+    "reject_missing": true,
+    "reject_infinite": true,
+    "reject_negative_below": -0.0,
+    "negatives_clipped_to_zero_before_scaling": true
+  },
+  "scaler": {
+    "method": "log1p(x / median) then standardise",
+    "median": [
+      0.00179296100439995,
+      0.0169255320455,
+      0.0048213726111,
+      0.00019411741439000001
+    ],
+    "mean": [
+      0.6519519202700068,
+      0.6495682917298233,
+      0.6487645554942858,
+      0.6460054415080951
+    ],
+    "std": [
+      0.2710027357874961,
+      0.3185436453662925,
+      0.3145646270536407,
+      0.3145878301488038
+    ]
+  },
+  "fdd_classes": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "metadata": {
+    "split_seed": 42,
+    "n_train": 1680,
+    "n_val": 420,
+    "n_test": 900,
+    "dropped_train_copies_of_test": true
+  }
+}

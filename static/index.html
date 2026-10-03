@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transformer Health Check | STOCHOS</title>
+  <meta name="description" content="Upload a power transformer's gas readings to see its likely fault and its remaining life in days, and how sure the models are.">
+  <link rel="canonical" href="https://transformer.stochos.dev/">
+  <link rel="icon" href="img/favicon.svg" type="image/svg+xml">
+  <meta name="theme-color" content="#0c1b29">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="STOCHOS">
+  <meta property="og:title" content="Transformer Health Check">
+  <meta property="og:description" content="Upload a power transformer's gas readings to see its likely fault and its remaining life, and how sure the models are.">
+  <meta property="og:url" content="https://transformer.stochos.dev/">
+  <meta property="og:image" content="https://stochos.dev/img/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preload" href="fonts/archivo-latin-wdth-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/public-sans-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <script>try{var t=localStorage.getItem("theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="app-header">
+    <div class="wrap app-bar">
+      <a class="brand" href="#/analyse" aria-label="Transformer Health Check, home">
+        <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <path d="M3 22 L9 15 L13 19 L19 10 L25 13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M25 5 V20" stroke="var(--link)" stroke-width="2.2" stroke-linecap="round"/>
+          <circle cx="25" cy="13" r="2.8" fill="var(--link)"/>
+        </svg>
+        <span class="brand-title">Transformer Health Check</span>
+      </a>
+      <nav class="tabs" aria-label="Main">
+        <a href="#/analyse" data-tab="analyse">Analyse</a>
+        <a href="#/how" data-tab="how">How it works</a>
+        <a href="#/performance" data-tab="performance">Performance</a>
+      </nav>
+      <div class="bar-right">
+        <span class="badge-demo" id="demo-badge" hidden>Demo data</span>
+        <a href="https://stochos.dev" target="_blank" rel="noopener">By STOCHOS<span class="sr-only"> (opens in a new tab)</span></a>
+        <button class="theme" id="theme" type="button" aria-label="Switch between light and dark theme" title="Switch theme">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3.5 a8.5 8.5 0 0 1 0 17 z" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <!-- ANALYSE -->
+    <section id="view-analyse" class="wrap" aria-labelledby="h-analyse">
+      <h1 class="sr-only" id="h-analyse">Analyse a transformer</h1>
+      <div id="status" role="status" aria-live="polite"></div>
+      <div class="analyse">
+        <aside class="rail" aria-label="Choose a transformer">
+          <div>
+            <h2>Add readings</h2>
+            <label class="dropzone" id="dropzone">
+              <span class="dz-title">Drop a CSV file</span>
+              <span class="dz-sub">or click to choose one</span>
+              <input class="sr-only" type="file" id="file" accept=".csv,text/csv">
+            </label>
+            <p class="fmt">CSV with 420 readings and the columns H2, CO, C2H4, C2H2.</p>
+          </div>
+          <div class="field">
+            <label for="sample">Or try an example</label>
+            <select id="sample"><option value="">Loading examples…</option></select>
+            <a id="sample-csv" href="#" download aria-disabled="true">Download this example as a CSV</a>
+          </div>
+        </aside>
+        <div id="out" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <!-- HOW IT WORKS -->
+    <section id="view-how" class="wrap page" hidden aria-labelledby="h-how">
+      <div class="page-head">
+        <h1 id="h-how">How it works</h1>
+        <p>Gases in a transformer's oil change when something inside goes wrong. Two models read them.</p>
+      </div>
+      <ol class="flow">
+        <li><h3>Add readings</h3><p>A CSV of 420 readings of four gases.</p></li>
+        <li><h3>We check the file</h3><p>Anything missing or odd stops here, with the reason.</p></li>
+        <li><h3>Two models read it</h3><p>One names the fault. One estimates the days left.</p></li>
+        <li><h3>You see how sure we are</h3><p>Unsure answers are flagged for a person.</p></li>
+      </ol>
+      <h3>What it cannot do</h3>
+      <ul class="limits">
+        <li>It learned from one public dataset, not from real transformers.</li>
+        <li>It is a decision aid. An engineer makes the call.</li>
+        <li>It is less precise when a long life remains.</li>
+        <li>The range is a guide, not a guarantee.</li>
+      </ul>
+      <details class="more words">
+        <summary>Words used here</summary>
+        <dl class="gloss">
+          <dt>Fault diagnosis</dt><dd>What is wrong right now: normal, partial discharge, low-energy discharge or low-temperature overheating.</dd>
+          <dt>Remaining life</dt><dd>How many days the transformer should keep working.</dd>
+          <dt>Confidence</dt><dd>How strongly the model favours its answer. Below the threshold, a person checks.</dd>
+          <dt>GRU</dt><dd>A neural network that reads data in order and remembers what came before.</dd>
+        </dl>
+      </details>
+    </section>
+
+    <!-- PERFORMANCE -->
+    <section id="view-performance" class="wrap page" hidden aria-labelledby="h-perf">
+      <div class="page-head">
+        <h1 id="h-perf">Performance</h1>
+        <p>Results on 900 transformers the models had never seen.</p>
+      </div>
+      <div id="perf"></div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <div class="wrap">
+      <p>Built by <a href="https://stochos.dev" target="_blank" rel="noopener">STOCHOS<span class="sr-only"> (opens in a new tab)</span></a>, Samsung Innovation Campus, Libya. A student project and decision aid, not an official Samsung product.</p>
+    </div>
+  </footer>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

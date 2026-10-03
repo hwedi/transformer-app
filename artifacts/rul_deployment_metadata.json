@@ -1,0 +1,54 @@
+{
+  "bundle_version": 1,
+  "task": "remaining_useful_life_regression",
+  "framework": "TensorFlow/Keras",
+  "model_file": "rul_cnn_gru_model.keras",
+  "target_scaler_file": "rul_target_scaler.json",
+  "model_architecture": {
+    "conv1d_filters": 32,
+    "conv1d_kernel_size": 3,
+    "gru_units": [
+      64,
+      32
+    ],
+    "dropout": 0.2,
+    "dense_units": 32,
+    "dense_l2": 0.001,
+    "output_activation": "linear"
+  },
+  "input_specification": {
+    "sequence_length": 420,
+    "n_features": 4,
+    "gas_columns": [
+      "H2",
+      "CO",
+      "C2H4",
+      "C2H2"
+    ],
+    "dtype": "float32"
+  },
+  "selection_metadata": {
+    "criterion": "minimum_validation_rmse",
+    "selected_epoch": 66,
+    "validation_mae_days": 38.72994613647461,
+    "validation_rmse_days": 55.46556769040366,
+    "validation_r2": 0.7901304364204407,
+    "validation_mape_percent": 10.07498550415039,
+    "seed": 42
+  },
+  "uncertainty_metadata": {
+    "method": "symmetric_validation_absolute_residual_quantile",
+    "nominal_coverage": 0.9,
+    "error_radius_days": 95.20925903320312,
+    "observed_validation_coverage": 0.9,
+    "note": "Empirical validation interval in Days; not a formal confidence interval."
+  },
+  "preprocessing_files": {
+    "common_preprocessor": "preprocessor.json",
+    "common_preprocessing_module": "tx_preprocessing.py"
+  },
+  "rul_cap_review": {
+    "maximum_training_label_days": 546.5,
+    "separate_cap_group_evaluation_required": true
+  }
+}

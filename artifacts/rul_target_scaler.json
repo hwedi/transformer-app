@@ -1,0 +1,26 @@
+{
+  "scaler_class": "MinMaxScaler",
+  "feature_range": [
+    0.0,
+    1.0
+  ],
+  "data_min_": [
+    181.0
+  ],
+  "data_max_": [
+    546.5
+  ],
+  "data_range_": [
+    365.5
+  ],
+  "scale_": [
+    0.002735978225246072
+  ],
+  "min_": [
+    -0.49521204829216003
+  ],
+  "n_features_in_": 1,
+  "target_unit": "Days",
+  "conversion_to_days_applied": true,
+  "conversion_rule": "1 time-step = 12 hours = 0.5 day"
+}
